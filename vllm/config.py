@@ -332,15 +332,18 @@ class ParallelConfig:
         self,
         pipeline_parallel_size: int,
         tensor_parallel_size: int,
+        instance_num: int,
         worker_use_ray: bool,
         max_parallel_loading_workers: Optional[int] = None,
     ) -> None:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
+        self.instance_num = instance_num
         self.worker_use_ray = worker_use_ray
         self.max_parallel_loading_workers = max_parallel_loading_workers
 
         self.world_size = pipeline_parallel_size * tensor_parallel_size
+        self.world_size = self.world_size * self.instance_num
         if self.world_size > 1:
             self.worker_use_ray = True
         self._verify_args()
@@ -349,6 +352,9 @@ class ParallelConfig:
         if self.pipeline_parallel_size > 1:
             raise NotImplementedError(
                 "Pipeline parallelism is not supported yet.")
+        if self.instance_num > 1:
+            if self.tensor_parallel_size > 1:
+                 raise NotImplementedError("Instantiating multiple instances of the model is currently supported only when tensor_parallel_size is set to 1.")
 
 
 class SchedulerConfig:

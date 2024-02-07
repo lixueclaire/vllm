@@ -7,9 +7,9 @@ import torch.nn as nn
 
 from vllm.config import ModelConfig, LoRAConfig, ParallelConfig, SchedulerConfig
 from vllm.logger import init_logger
-from vllm.model_executor import get_model, InputMetadata, SamplingMetadata
+from vllm.model_executor import get_model, get_model_without_weights, InputMetadata, SamplingMetadata
 from vllm.model_executor.parallel_utils.communication_op import (
-    broadcast_tensor_dict)
+    broadcast_tensor_dict, broadcast)
 from vllm.sampling_params import SamplingParams, SamplingType
 from vllm.sequence import SamplerOutput, SequenceData, SequenceGroupMetadata
 from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
@@ -69,7 +69,10 @@ class ModelRunner:
         self.in_wsl = in_wsl()
 
     def load_model(self) -> None:
-        self.model = get_model(self.model_config, self.lora_config)
+        if self.is_driver_worker:
+            self.model = get_model(self.model_config, self.lora_config)
+        else:
+            self.model = get_model_without_weights(self.model_config, self.lora_config)
 
         vocab_size = self.model.config.vocab_size
 
@@ -80,6 +83,16 @@ class ModelRunner:
                 self.scheduler_config.max_paddings, vocab_size,
                 self.lora_config, self.device)
             self.model = self.lora_manager.create_lora_manager(self.model)
+
+    def copy_model(self) -> None:
+        start_time = time.perf_counter()
+        params_dict = dict(self.model.named_parameters())
+        for name, param in params_dict.items():
+            broadcast(param.data, src=0)
+        torch.cuda.synchronize()
+        copy_model_time = time.perf_counter()
+        print(f"      locally copy time {copy_model_time - start_time:.2f} seconds.") 
+
 
     def set_block_size(self, block_size: int) -> None:
         self.block_size = block_size

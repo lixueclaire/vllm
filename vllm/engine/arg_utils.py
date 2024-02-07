@@ -22,6 +22,7 @@ class EngineArgs:
     worker_use_ray: bool = False
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
+    instance_num: int = 1
     max_parallel_loading_workers: Optional[int] = None
     block_size: int = 16
     swap_space: int = 4  # GiB
@@ -141,6 +142,11 @@ class EngineArgs:
                             type=int,
                             default=EngineArgs.tensor_parallel_size,
                             help='number of tensor parallel replicas')
+        parser.add_argument('--instance-num',
+                            '-tp',
+                            type=int,
+                            default=EngineArgs.instance_num,
+                            help='number of server instances')
         parser.add_argument(
             '--max-parallel-loading-workers',
             type=int,
@@ -268,6 +274,7 @@ class EngineArgs:
                                    model_config.get_sliding_window())
         parallel_config = ParallelConfig(self.pipeline_parallel_size,
                                          self.tensor_parallel_size,
+                                         self.instance_num,
                                          self.worker_use_ray,
                                          self.max_parallel_loading_workers)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,

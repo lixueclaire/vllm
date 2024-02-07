@@ -82,11 +82,12 @@ class LLMEngine:
             f"download_dir={model_config.download_dir!r}, "
             f"load_format={model_config.load_format}, "
             f"tensor_parallel_size={parallel_config.tensor_parallel_size}, "
+            f"instance_num={parallel_config.instance_num}, "
             f"quantization={model_config.quantization}, "
             f"enforce_eager={model_config.enforce_eager}, "
             f"seed={model_config.seed})")
         # TODO(woosuk): Print more configs in debug mode.
-
+        start_time = time.perf_counter()
         self.model_config = model_config
         self.cache_config = cache_config
         self.lora_config = lora_config
@@ -95,8 +96,13 @@ class LLMEngine:
         self.log_stats = log_stats
         self._verify_args()
 
+        verify_time = time.perf_counter()
+        print(f"  verify time {verify_time - start_time:.2f} seconds.") 
+
         self._init_tokenizer()
         self.seq_counter = Counter()
+        init_token_time = time.perf_counter()
+        print(f"  init tokenizer time {init_token_time -  verify_time:.2f} seconds.") 
 
         # Create the parallel GPU workers.
         if self.parallel_config.worker_use_ray:
@@ -107,12 +113,18 @@ class LLMEngine:
             self._init_workers_ray(placement_group)
         else:
             self._init_workers()
+        init_worker_time = time.perf_counter()
+        print(f"  init worker time {init_worker_time -  init_token_time:.2f} seconds.") 
 
         # Profile the memory usage and initialize the cache.
         self._init_cache()
+        init_cache_time = time.perf_counter()
+        print(f"  init cache time {init_cache_time -  init_worker_time:.2f} seconds.") 
 
         # Create the scheduler.
         self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        init_scheduler_time = time.perf_counter()
+        print(f"  init scheduler time {init_scheduler_time -  init_cache_time:.2f} seconds.") 
 
         # Logging.
         self.last_logging_time = 0.0
@@ -120,6 +132,8 @@ class LLMEngine:
         self.num_prompt_tokens: List[Tuple[float, int]] = []
         # List of (timestamp, num_tokens)
         self.num_generation_tokens: List[Tuple[float, int]] = []
+        init_log_time = time.perf_counter()
+        print(f"  init log time {init_log_time -  init_scheduler_time:.2f} seconds.") 
 
     def get_tokenizer_for_seq(self, sequence: Sequence):
         return self.tokenizer.get_lora_tokenizer(sequence.lora_request)
@@ -145,8 +159,13 @@ class LLMEngine:
             lora_config=self.lora_config,
             is_driver_worker=True,
         )
+        start_time = time.perf_counter()
         self._run_workers("init_model")
+        init_model_time = time.perf_counter()
+        print(f"    init model time {init_model_time - start_time:.2f} seconds.") 
         self._run_workers("load_model")
+        load_model_time = time.perf_counter()
+        print(f"    load model time {load_model_time - init_model_time:.2f} seconds.") 
 
     def _init_tokenizer(self, **tokenizer_init_kwargs):
         init_kwargs = dict(
@@ -263,12 +282,20 @@ class LLMEngine:
             is_driver_worker=True,
         )
 
+        start_time = time.perf_counter()
         self._run_workers("init_model")
+        init_model_time = time.perf_counter()
+        print(f"    init model time {init_model_time - start_time:.2f} seconds.") 
         self._run_workers(
             "load_model",
             max_concurrent_workers=self.parallel_config.
             max_parallel_loading_workers,
         )
+        load_model_time = time.perf_counter()
+        print(f"    load model time {load_model_time - init_model_time:.2f} seconds.") 
+        self._run_workers("copy_model")
+        copy_model_time = time.perf_counter()
+        print(f"    copy time {copy_model_time - load_model_time:.2f} seconds.") 
 
     def _verify_args(self) -> None:
         self.model_config.verify_with_parallel_config(self.parallel_config)
@@ -299,6 +326,7 @@ class LLMEngine:
             You may limit the usage of GPU memory
             by adjusting the `gpu_memory_utilization` parameters.
         """
+        start_time = time.perf_counter()
         # Get the maximum number of blocks that can be allocated on GPU and CPU.
         num_blocks = self._run_workers(
             "profile_num_available_blocks",
@@ -312,6 +340,9 @@ class LLMEngine:
         # operators can be applied to all workers.
         num_gpu_blocks = min(b[0] for b in num_blocks)
         num_cpu_blocks = min(b[1] for b in num_blocks)
+        # adjust blocks
+        num_cpu_blocks = num_cpu_blocks // 4
+
         # FIXME(woosuk): Change to debug log.
         logger.info(f"# GPU blocks: {num_gpu_blocks}, "
                     f"# CPU blocks: {num_cpu_blocks}")
@@ -331,21 +362,30 @@ class LLMEngine:
 
         self.cache_config.num_gpu_blocks = num_gpu_blocks
         self.cache_config.num_cpu_blocks = num_cpu_blocks
+        profiling_time = time.perf_counter()
+        print(f"    profiling time {profiling_time -  start_time:.2f} seconds.") 
 
         # Initialize the cache.
         self._run_workers("init_cache_engine", cache_config=self.cache_config)
+        init_cache_engine_time = time.perf_counter()
+        print(f"    init cache engine time {init_cache_engine_time - profiling_time:.2f} seconds.") 
         # Warm up the model. This includes capturing the model into CUDA graph
         # if enforce_eager is False.
         self._run_workers("warm_up_model")
+        warm_up_time = time.perf_counter()
+        print(f"    warm up model time {warm_up_time - init_cache_engine_time:.2f} seconds.")  
 
     @classmethod
     def from_engine_args(cls, engine_args: EngineArgs) -> "LLMEngine":
+        start_time = time.perf_counter()
         """Creates an LLM engine from the engine arguments."""
         # Create the engine configs.
         engine_configs = engine_args.create_engine_configs()
         parallel_config = engine_configs[2]
         # Initialize the cluster.
         placement_group = initialize_cluster(parallel_config)
+        init_cluster_time = time.perf_counter()
+        print(f"  init cluster time {init_cluster_time - start_time:.2f} seconds.") 
         # Create the LLM engine.
         engine = cls(*engine_configs,
                      placement_group,

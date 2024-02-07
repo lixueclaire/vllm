@@ -1,6 +1,7 @@
 """A GPU worker class."""
 import gc
 import os
+import time
 from typing import Dict, List, Tuple, Set, Optional
 
 import torch
@@ -87,6 +88,9 @@ class Worker:
     def load_model(self):
         self.model_runner.load_model()
 
+    def copy_model(self):
+        self.model_runner.copy_model()
+
     @torch.inference_mode()
     def profile_num_available_blocks(
         self,
@@ -94,6 +98,7 @@ class Worker:
         gpu_memory_utilization: float,
         cpu_swap_space: int,
     ) -> Tuple[int, int]:
+        start_time = time.perf_counter()
         """Profiles the peak memory usage of the model and returns the maximum
         number of GPU and CPU cache blocks that can be allocated.
 
@@ -128,15 +133,20 @@ class Worker:
             self.model_runner.remove_all_loras()
         gc.collect()
         torch.cuda.empty_cache()
+        profiling_time = time.perf_counter()
+        print(f"      locally profiling time {profiling_time -  start_time:.2f} seconds.") 
         return num_gpu_blocks, num_cpu_blocks
 
     def init_cache_engine(self, cache_config: CacheConfig) -> None:
+        start_time = time.perf_counter()
         self.cache_config = cache_config
         self.cache_engine = CacheEngine(self.cache_config, self.model_config,
                                         self.parallel_config)
         self.cache_events = self.cache_engine.events
         self.gpu_cache = self.cache_engine.gpu_cache
         self.model_runner.set_block_size(self.cache_engine.block_size)
+        init_cache_engine_time = time.perf_counter()
+        print(f"      locally init cache engine time {init_cache_engine_time - start_time:.2f} seconds.") 
 
     def warm_up_model(self) -> None:
         if not self.model_config.enforce_eager:
@@ -247,7 +257,8 @@ def _init_distributed_environment(
     # A small all_reduce for warmup.
     torch.distributed.all_reduce(torch.zeros(1).cuda())
     ensure_model_parallel_initialized(parallel_config.tensor_parallel_size,
-                                      parallel_config.pipeline_parallel_size)
+                                      parallel_config.pipeline_parallel_size,
+                                      parallel_config.instance_num)
 
 
 def _check_if_gpu_supports_dtype(torch_dtype: torch.dtype):

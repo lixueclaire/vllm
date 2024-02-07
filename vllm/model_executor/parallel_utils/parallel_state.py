@@ -19,6 +19,7 @@ _PIPELINE_GLOBAL_RANKS = None
 def initialize_model_parallel(
     tensor_model_parallel_size: int = 1,
     pipeline_model_parallel_size: int = 1,
+    instance_num: int = 1,
 ) -> None:
     """
     Initialize model parallel groups.
@@ -45,8 +46,13 @@ def initialize_model_parallel(
     # Get world size and rank. Ensure some consistencies.
     assert torch.distributed.is_initialized()
     world_size: int = torch.distributed.get_world_size()
+    mini_world_size: int = world_size / instance_num
 
-    if (world_size !=
+    if instance_num > 1:
+        if mini_world_size > 1:
+            raise RuntimeError("Instantiating multiple instances of the model is currently supported only when parallel_size =1")
+
+    if (mini_world_size !=
             tensor_model_parallel_size * pipeline_model_parallel_size):
         raise RuntimeError(
             f"world_size ({world_size}) is not equal to "
@@ -86,6 +92,7 @@ def initialize_model_parallel(
 def ensure_model_parallel_initialized(
     tensor_model_parallel_size: int,
     pipeline_model_parallel_size: int,
+    instance_num: int,
 ) -> None:
     """Helper to initialize model parallel groups if they are not initialized,
     or ensure tensor-parallel and pipeline-parallel sizes are equal to expected
@@ -93,7 +100,8 @@ def ensure_model_parallel_initialized(
     """
     if not model_parallel_is_initialized():
         initialize_model_parallel(tensor_model_parallel_size,
-                                  pipeline_model_parallel_size)
+                                  pipeline_model_parallel_size,
+                                  instance_num)
         return
 
     assert (
