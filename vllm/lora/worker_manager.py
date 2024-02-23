@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod, abstractproperty
 from typing import Any, List, Optional, Set, Type, Union
 
 import torch
+import time
 
 from vllm.lora.models import (TARGET_MODULES_QKV, LoRAModel, LoRAModelManager,
                               LRUCacheLoRAModelManager, create_lora_manager)
@@ -189,6 +190,7 @@ class LRUCacheWorkerLoRAManager(WorkerLoRAManager):
     (unless they are already loaded) and least recently used LoRAs will
     be unloaded if the cache is above capacity."""
 
+    _flag: int = 0
     _lora_manager_cls: Type[
         LRUCacheLoRAModelManager] = LRUCacheLoRAModelManager
 
@@ -224,14 +226,23 @@ class LRUCacheWorkerLoRAManager(WorkerLoRAManager):
 
     def add_lora(self, lora_request: LoRARequest) -> bool:
         if lora_request.lora_int_id not in self.list_loras():
+            start = time.perf_counter()
             # Remove before we load the new lora to save memory
             if len(self._lora_manager) + 1 > self._lora_manager.capacity:
                 self._lora_manager.remove_oldest_lora()
             lora = self._load_lora(lora_request)
             loaded = self._lora_manager.add_lora(lora)
+            end = time.perf_counter()
+            print(f"  Load lora: from ESSD to CPU took {end - start:.2f} seconds.")
         else:
             # If the lora is already loaded, just touch it to
             # update its position in the caches
             loaded = self._lora_manager.get_lora(lora_request.lora_int_id)
+        start_time = time.perf_counter()
         self._lora_manager.activate_lora(lora_request.lora_int_id)
+        end_time = time.perf_counter()
+        total_time = end_time - start_time
+        if self._flag < 2:
+            self._flag += 1
+            print(f"  Load lora: from CPU to GPU took {total_time:.2f} seconds.")
         return loaded
