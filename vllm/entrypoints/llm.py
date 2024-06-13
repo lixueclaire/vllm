@@ -17,6 +17,12 @@ from vllm.sampling_params import SamplingParams
 from vllm.sequence import MultiModalData
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, deprecate_kwargs
+import os
+import gc
+import ray
+import torch.cuda
+from ray.util import remove_placement_group
+from vllm.distributed.parallel_state import destroy_model_parallel, _TP_DEVICE_GROUP, _TP_CPU_GROUP
 
 logger = init_logger(__name__)
 
@@ -141,6 +147,78 @@ class LLM:
             disable_custom_all_reduce=disable_custom_all_reduce,
             **kwargs,
         )
+        self.llm_engine = LLMEngine.from_engine_args(
+            engine_args, usage_context=UsageContext.LLM_CLASS)
+        self.request_counter = Counter()
+
+    def swap(
+        self,
+        model: str,
+        tokenizer: Optional[str] = None,
+        tokenizer_mode: str = "auto",
+        skip_tokenizer_init: bool = False,
+        trust_remote_code: bool = False,
+        tensor_parallel_size: int = 1,
+        dtype: str = "auto",
+        quantization: Optional[str] = None,
+        revision: Optional[str] = None,
+        tokenizer_revision: Optional[str] = None,
+        seed: int = 0,
+        gpu_memory_utilization: float = 0.9,
+        swap_space: int = 4,
+        enforce_eager: bool = False,
+        max_context_len_to_capture: Optional[int] = None,
+        max_seq_len_to_capture: int = 8192,
+        disable_custom_all_reduce: bool = False,
+        **kwargs,
+    ) -> None:
+        print('service stopping ..')
+        print(f"cuda memory: {torch.cuda.memory_allocated() // 1024 // 1024}MB")
+
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+        #if _TP_DEVICE_GROUP:
+        #    remove_placement_group(_TP_DEVICE_GROUP)
+        #if _TP_CPU_GROUP:
+        #    remove_placement_group(_TP_CPU_GROUP)
+
+        destroy_model_parallel()
+
+        del self.llm_engine.model_executor.driver_worker
+        del self.llm_engine
+        gc.collect()
+
+        torch.cuda.empty_cache()
+        torch.distributed.destroy_process_group()
+
+        if ray.is_initialized():
+            ray.shutdown()
+
+        print(f"cuda memory: {torch.cuda.memory_allocated() // 1024 // 1024}MB")
+
+        if "disable_log_stats" not in kwargs:
+            kwargs["disable_log_stats"] = True
+        engine_args = EngineArgs(
+            model=model,
+            tokenizer=tokenizer,
+            tokenizer_mode=tokenizer_mode,
+            skip_tokenizer_init=skip_tokenizer_init,
+            trust_remote_code=trust_remote_code,
+            tensor_parallel_size=tensor_parallel_size,
+            dtype=dtype,
+            quantization=quantization,
+            revision=revision,
+            tokenizer_revision=tokenizer_revision,
+            seed=seed,
+            gpu_memory_utilization=gpu_memory_utilization,
+            swap_space=swap_space,
+            enforce_eager=enforce_eager,
+            max_context_len_to_capture=max_context_len_to_capture,
+            max_seq_len_to_capture=max_seq_len_to_capture,
+            disable_custom_all_reduce=disable_custom_all_reduce,
+            **kwargs,
+        )
+
         self.llm_engine = LLMEngine.from_engine_args(
             engine_args, usage_context=UsageContext.LLM_CLASS)
         self.request_counter = Counter()
